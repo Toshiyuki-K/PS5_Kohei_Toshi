@@ -1,0 +1,742 @@
+---
+title: "30538 Problem Set 5: Web Scraping"
+author: "Kohei Inagaki and Toshiyuki Kindaichi"
+date: "11/9/2024"
+format: 
+  pdf:
+    include-in-header: 
+       text: |
+         \usepackage{fvextra}
+         \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+include-before-body:
+  text: |
+    \RecustomVerbatimEnvironment{verbatim}{Verbatim}{
+      showspaces = false,
+      showtabs = false,
+      breaksymbolleft={},
+      breaklines
+    }
+output:
+  echo: false
+  eval: false
+---
+
+**Due 11/9 at 5:00PM Central. Worth 100 points + 10 points extra credit.**
+
+## Submission Steps (10 pts)
+1. This problem set is a paired problem set.
+2. Play paper, scissors, rock to determine who goes first. Call that person *Partner 1*.
+    - Partner 1 (Kohei Inagaki):
+    - Partner 2 (Toshiyuki Kindaichi):
+3. Partner 1 will accept the `ps5` and then share the link it creates with their partner. You can only share it with one partner so you will not be able to change it after your partner has accepted. 
+4. "This submission is our work alone and complies with the 30538 integrity policy." Add your initials to indicate your agreement: KI and TK
+5. "I have uploaded the names of anyone else other than my partner and I worked with on the problem set **[here](https://docs.google.com/forms/d/185usrCREQaUbvAXpWhChkjghdGgmAZXA3lPWpXLLsts/edit)**"  (1 point)
+6. Late coins used this pset: \*\*\_\_\*\* Late coins left after submission: \*\*\_\_\*\*
+7. Knit your `ps5.qmd` to an PDF file to make `ps5.pdf`, 
+    * The PDF should not be more than 25 pages. Use `head()` and re-size figures when appropriate. 
+8. (Partner 1): push  `ps5.qmd` and `ps5.pdf` to your github repo.
+9. (Partner 1): submit `ps5.pdf` via Gradescope. Add your partner on Gradescope.
+10. (Partner 1): tag your submission in Gradescope
+
+\newpage
+
+```{python}
+import altair as alt
+import warnings 
+warnings.filterwarnings('ignore')
+alt.renderers.enable("png")
+```
+
+
+## Step 1: Develop initial scraper and crawler
+
+### 1. Scraping (PARTNER 1)
+
+```{python}
+import pandas as pd
+import altair as alt
+import time
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime
+import geopandas as gpd
+import matplotlib.pyplot as plt
+```
+
+```{python}
+# Prepare for parsering HTML
+url = 'https://oig.hhs.gov/fraud/enforcement/'
+response = requests.get(url)
+with open('enforcement_actions_page.html', 'r') as page:
+    text = page.read()
+soup = BeautifulSoup(response.text, 'lxml')
+```
+
+```{python}
+print(response.text[:500])
+```
+
+By inspecting the page, we found title, date, category, and ling is included in the following HTML "[li class='usa-card...']...[/li]"
+
+```{python}
+# Set the list for enforcement actions
+enforcement_actions = []
+
+# Set loop to substract the data from HTML 
+for item in soup.find_all('li', class_='usa-card'):
+    # Title and link
+    title_tag = item.find('h2', class_='usa-card__heading').find('a')
+    title = title_tag.get_text()
+    link = 'https://oig.hhs.gov' + title_tag['href']  # Define the full link name
+
+    # Date
+    date_tag = item.find('span', class_='text-base-dark')
+    date = date_tag.get_text() if date_tag else 'N/A'
+    
+    # Category
+    category_tag = item.find('li', class_='usa-tag')
+    category = category_tag.get_text() if category_tag else 'N/A'
+
+    # Add to the list
+    enforcement_actions.append({
+        'Title': title,
+        'Date': date,
+        'Category': category,
+        'Link': link
+    })
+
+# Display the result
+df = pd.DataFrame(enforcement_actions)
+print(df.head())
+```
+
+### 2. Crawling (PARTNER 1)
+
+By checking the link, we found that the name of the agency involved is listed as 'Agency' in 'Action Details' tag, and some of the link do not have the 'Agency.' Then, by inspecting the HTML, we discovered 
+
+```{python}
+
+for action in enforcement_actions:
+    link = action['Link']
+    response = requests.get(link)
+    
+    # Parse HTML with BeautifulSoup
+    detail_soup = BeautifulSoup(response.text, 'lxml')
+    
+    # Search <li>  tag including 'Agency:'
+    agency = 'N/A'  # set initial value as N/A
+    for li in detail_soup.find_all('li'):
+        if 'Agency:' in li.get_text():
+            # Remove word 'Agency:' to get only the name of agency involved
+            agency = li.get_text().replace('Agency:', '').strip()
+            break  
+    
+    # Add to the list
+    action['Agency'] = agency
+    
+    # Wait a half second
+    time.sleep(0.5)
+
+df_full = pd.DataFrame(enforcement_actions)
+print(df_full.head())
+```
+
+## Step 2: Making the scraper dynamic
+
+### 1. Turning the scraper into a function 
+
+* a. Pseudo-Code (PARTNER 2)
+
+1. Define the function as scrape_enforcement_actions with arguments month and year.
+2. If year is less than 2013, display a message to the user and end the function.
+3. Prepare a list to store the data.
+4. Start the loop (using a while loop):
+* Generate the URL for each page and retrieve the HTML.
+* Parse the HTML and retrieve elements containing enforcement actions.
+* For each action, extract the required information (title, date, category, link) and add it to the list.
+* If there is a next page, wait 1 second, then increment the page number.
+* If there is no next page, exit the loop.
+5. Convert the list to a DataFrame and save it as a CSV file.
+6. Return the DataFrame.
+
+* b. Create Dynamic Scraper (PARTNER 2)
+
+```{python}
+def scrape_enforcement_actions(month, year):
+    # Check the appropriate year >= 2013
+    if year < 2013:
+        print("Enter a year greater than or equal to 2013.")
+        return
+    
+    # Set base url and current date
+    base_url = 'https://oig.hhs.gov/fraud/enforcement/'
+    current_date = datetime.now()
+    start_date = datetime(year, month, 1)  # set the start day
+    
+    # List for encforcement actions
+    enforcement_actions_2 = []
+    
+    # Condition for first page 
+    page = 1
+    while True:
+        # No 'page' on URL when it is first page
+        if page == 1:
+            url = base_url
+        else:
+            url = f"{base_url}?page={page}"
+        
+        response = requests.get(url)
+
+        # set soup
+        soup = BeautifulSoup(response.text, 'lxml')
+        
+        # Get the action information
+        actions = soup.find_all('li', class_='usa-card')
+        if not actions:
+            # Stop the loop if no data available
+            break
+        
+        for item in actions:
+            # same process as step 1
+            title_tag = item.find('h2', class_='usa-card__heading').find('a')
+            title = title_tag.get_text()
+            link = 'https://oig.hhs.gov' + title_tag['href']
+
+            # Date
+            date_tag = item.find('span', class_='text-base-dark')
+            date_str = date_tag.get_text() if date_tag else 'N/A'
+            try:
+                action_date = datetime.strptime(date_str, '%B %d, %Y')
+                # Attribution: Ask ChatGPT how to remove if NAs show up
+            except ValueError:
+                action_date = None
+            
+            # Stop crawling if the date is before the start date 
+            if action_date and action_date < start_date:
+                return pd.DataFrame(enforcement_actions_2)  
+            
+            # category
+            category_tag = item.find('li', class_='usa-tag')
+            category = category_tag.get_text() if category_tag else 'N/A'
+            
+            # agency
+            agency = 'N/A'
+            detail_response = requests.get(link)
+            detail_soup = BeautifulSoup(detail_response.text, 'lxml')
+            for li in detail_soup.find_all('li'):
+                if 'Agency:' in li.get_text():
+                    agency = li.get_text().replace('Agency:', '').strip()
+                    break
+            
+            # Add info to the list
+            enforcement_actions_2.append({
+                'Title': title,
+                'Date': date_str,
+                'Category': category,
+                'Link': link,
+                'Agency': agency
+            })
+
+        # One second wait
+        time.sleep(1)
+        page += 1
+
+    # Save the data as dataframe
+    df = pd.DataFrame(enforcement_actions_2)
+    filename = f"enforcement_actions_{year}_{month:02}.csv"
+    df.to_csv(filename, index=False)
+    print(f"Data saved to {filename}")
+
+    return df
+```
+
+
+```{python}
+# Get the data from Jan, 2023 to current
+df_2023 = scrape_enforcement_actions(1, 2023)
+
+# The number of enforcement action
+print("Number of enforcement actions:", len(df_2023))
+
+# Details of the earliest action since January 2023
+earliest_action = df_2023.iloc[-1]  
+print("Earliest enforcement action:")
+print(earliest_action)
+print(df_2023.head())
+
+```
+
+
+* c. Test Partner's Code (PARTNER 1)
+
+```{python}
+
+# Get the data from Jan, 2021 to current
+df_2021 = scrape_enforcement_actions(1, 2021)
+
+# The number of enforcement action
+print("Number of enforcement actions:", len(df_2021))
+
+# Details of the earliest action since January 2021
+earliest_action = df_2021.iloc[-1]  
+print("Earliest enforcement action:")
+print(earliest_action)
+
+```
+
+## Step 3: Plot data based on scraped data
+
+### 1. Plot the number of enforcement actions over time (PARTNER 2)
+
+```{python}
+# Set month and year data
+# Convert column 'Date' into datetime type and 
+df_2021['Date'] = pd.to_datetime(df_2021['Date'])
+# Check whether there are NAs
+na_count = df_2021['Date'].isna().sum()
+print("Number of NA values in 'Date' column in DataFrame:", na_count)
+# Create the colum for month + year
+df_2021['YearMonth'] = df_2021['Date'].dt.to_period('M')  
+
+# Rearrange the data for the x-axis
+# Count the number of monthly actions 
+monthly_counts = df_2021.groupby('YearMonth').size().reset_index(name = 'Count')
+# Change the datatype for easy timeseries plotting
+monthly_counts['YearMonth'] = monthly_counts['YearMonth'].dt.to_timestamp()
+
+```
+
+```{python}
+
+# Plot a line chart
+line_chart_overall = alt.Chart(monthly_counts).mark_line().encode(
+    x=alt.X('YearMonth:T', axis=alt.Axis(title='Month_Year', tickCount='month')),
+    y='Count:Q'
+).properties(
+    title="Number of Enforcement Actions Over Time (Monthly)",
+    width=700,
+    height=400
+)
+
+line_chart_overall.display()
+
+```
+
+### 2. Plot the number of enforcement actions categorized: (PARTNER 1)
+
+* based on "Criminal and Civil Actions" vs. "State Enforcement Agencies"
+
+```{python}
+# Filter for the two categories; “Criminal and Civil Actions” and “State Enforcement Agencies”
+filtered_df = df_2021[df_2021['Category'].isin(['Criminal and Civil Actions', 'State Enforcement Agencies'])]
+# Make sure the date is period type for aggregation
+filtered_df['YearMonth'] = filtered_df['Date'].dt.to_period('M')
+
+# Rearrange the data for plotting
+# Group by YearMonth and Category
+two_categories_counts = filtered_df.groupby(['YearMonth', 'Category']).size().reset_index(name='Count')
+# Count the occurrences and convert the date into timestamp for plotting of x-axis
+two_categories_counts['YearMonth'] = two_categories_counts['YearMonth'].dt.to_timestamp()
+
+# Plot the line chart for two categories
+line_chart_category = alt.Chart(two_categories_counts).mark_line().encode(
+    x=alt.X('YearMonth:T', axis=alt.Axis(title='Month_Year', tickCount='month')),
+    y='Count:Q',
+    color='Category:N',  # Different colors for each category
+    tooltip=['YearMonth:T', 'Category:N', 'Count:Q']
+).properties(
+    title="Number of Enforcement Actions by Category (Criminal and Civil Actions vs. State Enforcement Agencies)",
+    width=700,
+    height=400
+)
+
+line_chart_category.display()
+
+```
+
+* based on five topics in “Criminal and Civil Actions” category: “Health Care Fraud”,
+“Financial Fraud”, “Drug Enforcement”, “Bribery/Corruption”, and “Other”
+
+```{python}
+# Filter for "Criminal and Civil Actions" category
+criminal_civic_df = df_2021[df_2021['Category'] == 'Criminal and Civil Actions']
+
+# Define the keyword for each topic
+topic_keywords = {
+    'Health Care Fraud': ['health'],
+    'Financial Fraud': ['financial'],
+    'Drug Enforcement': ['drug'],
+    'Bribery/Corruption': ['bribery', 'corruption']
+}
+
+# Assign titles to each topic based on the keywords
+def assign_topic(title):
+    title = title.lower()  
+    for topic, keywords in topic_keywords.items():
+        if any(keyword in title for keyword in keywords):
+            return topic
+    return 'Other'  
+
+# Apply the function to create the 'Topic' column
+criminal_civic_df['Topic'] = criminal_civic_df['Title'].apply(assign_topic)
+
+# Convert 'Date' to period type for aggregation
+criminal_civic_df['YearMonth'] = criminal_civic_df['Date'].dt.to_period('M')
+
+# Group by YearMonth and Topic, then count the occurrences
+topics_counts = criminal_civic_df.groupby(['YearMonth', 'Topic']).size().reset_index(name='Count')
+topics_counts['YearMonth'] = topics_counts['YearMonth'].dt.to_timestamp()  # Convert to timestamp for plotting
+
+# Plot the line chart for five topics within "Criminal and Civil Actions"
+line_chart_topics = alt.Chart(topics_counts).mark_line().encode(
+    x=alt.X('YearMonth:T', axis=alt.Axis(title='Month_Year', tickCount='month')),
+    y='Count:Q',
+    color='Topic:N',  
+    tooltip=['YearMonth:T', 'Topic:N', 'Count:Q']
+).properties(
+    title="Number of Enforcement Actions by Five Topics in Criminal and Civil Actions",
+    width=700,
+    height=400
+)
+
+line_chart_topics.display()
+
+
+```
+
+## Step 4: Create maps of enforcement activity
+
+### 1. Map by State (PARTNER 1)
+
+```{python}
+# Import shape file
+states_gdf = gpd.read_file("C:\\Users\\sumos\\OneDrive\\デスクトップ\\Harris\\2024秋\\Python2\\PS\\PS5\\statedata\\cb_2018_us_state_500k.shp")
+print(states_gdf.head())
+
+```
+
+
+```{python}
+# Clean the name of states in the df_2021
+# Subtract actions by state agency
+state_agency_df = df_2021[df_2021['Agency'].str.contains("State of", na=False)].copy()
+
+# Delete "Stat of" to get only the name of state
+state_agency_df['State'] = state_agency_df['Agency'].str.replace("State of ", "", regex=False)
+
+# Count the number of actions by state
+state_counts = state_agency_df['State'].value_counts().reset_index(name='Count')
+print(state_counts.head())
+```
+
+```{python}
+# Merge the GeoDataFrame and enforcement action DF
+
+# Merge state_gdf and state_counts with name
+merged_state_gdf = states_gdf.merge(state_counts, left_on='NAME', right_on='State', how='left')
+
+# Replace Na（meaning no enforcement actions in that state） with 0
+merged_state_gdf['Count'] = merged_state_gdf['Count'].fillna(0)
+merged_state_gdf['Count'] = merged_state_gdf['Count'].astype(int)
+print(merged_state_gdf[['NAME', 'Count']].head())
+
+```
+
+```{python}
+# Plot choropleth
+
+state_choropleth = alt.Chart(merged_state_gdf).mark_geoshape(
+    stroke='black',      
+    strokeWidth=0.5      
+).encode(
+    color=alt.Color('Count:Q', 
+                    scale=alt.Scale(scheme='spectral'),  # Attribution; Ask ChatGPT color variation
+                    legend=alt.Legend(tickCount=10)),  
+    tooltip=[alt.Tooltip('NAME:N', title='State'), alt.Tooltip('Count:Q', title='Enforcement Actions')]
+).properties(
+    title='State-Level Enforcement Actions',
+    width=800,
+    height=500
+).project('albersUsa') # Attribution; Ask ChatGPT how to depict the whole US including Alaska and Hawaii
+
+state_choropleth.display()
+```
+
+### 2. Map by District (PARTNER 2)
+
+```{python}
+# Import shape file
+
+districts_gdf = gpd.read_file("C:\\Users\\sumos\\OneDrive\\デスクトップ\\Harris\\2024秋\\Python2\\PS\\PS5\\districtdata\\geo_export_ca108d65-c874-4627-bdee-cfced655997b.shp")
+print(districts_gdf.head())
+
+```
+
+```{python}
+# Clean the name of district in the df_2021
+
+# Filter for the "District" in Agency column 
+district_level_df = df_2021[df_2021['Agency'].str.contains("District", na=False)].copy()
+```
+
+At first, we crease the subset to check the unique names in the 'Agency' column.
+
+```{python}
+# Check the unique rows
+unique_districts = district_level_df.groupby('Agency').first().reset_index()
+
+print(unique_districts.head())
+
+```
+
+We found in this dataframe that several words or pharese are added to some of the concrete district name in the 'Agency' column. Therefore, we need to remove these words. We checked every unnecessary word/phrase, and then define the function to remove them.
+
+```{python}
+# Define the funtion to remove the unnecessary words
+
+def clean_district_name(district_name):
+    # Unnecessary words or phrases
+    phrases_to_remove = [
+        "U.S. Attorney's Office, ",
+        "Attorney's Office, ",
+        "Attorney’s Office, ",
+        "2021; U.S.",
+        "Connecticut Attorney General and U.S.",
+        "Inspector General",
+        "†††", "††",
+        "June 28, 2024: ",
+        "November 7, 2024; ",
+        "U.S. Department of Justice and ",
+        "U.S. ",
+        "Attorney General, ",
+        "Attorneyĺs Office, ",
+        "Attorney’s Office ",
+        "Attorney’s Office; "
+    ]
+    
+    # Remove these words or phrases from district_name 
+    for phrase in phrases_to_remove:
+        district_name = district_name.replace(phrase, "")
+    # Remove the blank spaces before and after the district name
+    return district_name.strip()
+
+
+```
+
+```{python}
+# Apply the function to the district_level_df for cleaning the 'Agency' Column
+district_level_df['Cleaned_District'] = district_level_df['Agency'].apply(clean_district_name)
+
+print(district_level_df[['Agency', 'Cleaned_District']].head())
+```
+
+
+```{python}
+# Count the number of actions per Cleaned_District
+district_counts = district_level_df['Cleaned_District'].value_counts().reset_index()
+district_counts.columns = ['District', 'Count'] 
+print(district_counts.head())
+
+```
+
+Then, we found that within the "District" column, there are combined entries: "Southern District of Florida and Western District of Kentucky", "Southern District of Texas and Southern District of Illinois", and "Western District of Kentucky and Southern District of Florida". Each of these entries has a count of 1. By dividing them and counting the each district, we want to correct these by:
+
+* Adding 2 counts to "Southern District of Florida" and 2 to "Western District of Kentucky" 
+* Adding 1 count each to "Southern District of Texas" and "Southern District of Illinois" 
+Then, I will remove the rows containing the combined entries.
+
+```{python}
+
+# Take a copy of 'district_counts' before making updates
+original_district_counts = district_counts.copy()
+
+# Manually update the counts in `district_counts`
+district_counts.loc[district_counts['District'] == 'Southern District of Florida', 'Count'] += 2
+district_counts.loc[district_counts['District'] == 'Western District of Kentucky', 'Count'] += 2
+district_counts.loc[district_counts['District'] == 'Southern District of Texas', 'Count'] += 1
+district_counts.loc[district_counts['District'] == 'Southern District of Illinois', 'Count'] += 1
+
+# Remove rows with combined entries
+combined_entries = [
+    "Southern District of Florida and Western District of Kentucky",
+    "Southern District of Texas and Southern District of Illinois",
+    "Western District of Kentucky and Southern District of Florida"
+]
+district_counts = district_counts[~district_counts['District'].isin(combined_entries)]
+
+# Confirm the final counts match between `original_district_counts` and `district_counts`
+for district in ["Southern District of Florida", "Western District of Kentucky", "Southern District of Texas", "Southern District of Illinois"]:
+    original_count = original_district_counts.loc[original_district_counts['District'] == district, 'Count'].values[0]
+    updated_count = district_counts.loc[district_counts['District'] == district, 'Count'].values[0]
+    print(f"{district} - Original Count: {original_count}, Updated Count: {updated_count}")
+
+for entry in combined_entries:
+    if entry in district_counts['District'].values:
+        print(f"{entry} is found in District column.")
+    else:
+        print(f"{entry} is not found in District column.")
+
+```
+
+Now that We can get the cleaned district, let's merge.
+
+```{python}
+# Merge districts_gdf and district_counts by 'judicial_d' and 'District'
+merged_districts_gdf = districts_gdf.merge(district_counts, left_on='judicial_d', right_on='District', how='left')
+
+# Replace Na（meaning no enforcement actions in that district） with 0
+merged_districts_gdf['Count'] = merged_districts_gdf['Count'].fillna(0).astype(int)
+
+print(merged_districts_gdf[['judicial_d', 'District', 'Count']].head())
+
+```
+
+
+```{python}
+# Plot choropleth
+district_choropleth = alt.Chart(merged_districts_gdf).mark_geoshape(
+    stroke='black',      
+    strokeWidth=0.5      
+).encode(
+    color=alt.Color('Count:Q', 
+                    scale=alt.Scale(scheme='spectral'),  
+                    legend=alt.Legend(tickCount=10)),  
+    tooltip=[alt.Tooltip('judicial_d:N', title='District'), alt.Tooltip('Count:Q', title='Enforcement Actions')]
+).properties(
+    title='District-Level Enforcement Actions',
+    width=800,
+    height=500
+).project('albersUsa') 
+
+district_choropleth.display()
+
+```
+
+## Extra Credit
+
+### 1. Merge zip code shapefile with population
+
+```{python}
+
+# Import zip shape file
+zip_gdf = gpd.read_file("C:\\Users\\sumos\\OneDrive\\デスクトップ\\Harris\\2024秋\\Python2\\PS\\PS4\\data\\gz_2010_us_860_00_500k.shp")
+print(zip_gdf.head())
+
+# Import population csv
+population_df = pd.read_csv("C:\\Users\\sumos\\OneDrive\\デスクトップ\\Harris\\2024秋\\Python2\\PS\\PS5\\populationdata\\DECENNIALDHC2020.P1-Data.csv")
+print(population_df.head())
+```
+
+Looking at the population_df, we want to skip first row. In addition, we want to remove 'ZCTA5' in 'Geographic Area Name.'
+
+```{python}
+# Skip the first row (index 0)
+population_df = pd.read_csv("C:\\Users\\sumos\\OneDrive\\デスクトップ\\Harris\\2024秋\\Python2\\PS\\PS5\\populationdata\\DECENNIALDHC2020.P1-Data.csv", skiprows = 1)
+# Replace 'ZCTA5' with '' in the column 'Geographic Area Name' and remove blank before zip code
+population_df['ZIP'] = population_df['Geographic Area Name'].str.replace('ZCTA5', '', regex=False).str.strip()
+
+print(population_df.head())
+
+```
+
+```{python}
+# Make sure the same datatype for merge
+zip_gdf['ZCTA5'] = zip_gdf['ZCTA5'].astype(str)
+population_df['ZIP'] = population_df['ZIP'].astype(str)
+
+# Merge 
+merged_zip_population_gdf = zip_gdf.merge(population_df, left_on='ZCTA5', right_on='ZIP', how='left')
+print(merged_zip_population_gdf.head())
+```
+
+### 2. Conduct spatial join
+
+```{python}
+# Ensure both GeoDataFrames use the same CRS (coordinate reference system)
+merged_zip_population_gdf = merged_zip_population_gdf.to_crs(districts_gdf.crs)
+
+# Spatial join between zip population gdf and district gdf
+sjoin_zip_districts_gdf = gpd.sjoin(merged_zip_population_gdf, districts_gdf, how='inner', predicate='intersects')
+
+# Check the column name
+print(sjoin_zip_districts_gdf.columns)
+# print the result of spatial join for necessary info
+print(sjoin_zip_districts_gdf[['ZCTA5', 'geometry', ' !!Total', 'judicial_d']].head())
+
+```
+
+```{python}
+
+# Convert the name of ' !!Total' to 'Population' for easy understanding
+sjoin_zip_districts_gdf = sjoin_zip_districts_gdf.rename(columns={' !!Total': 'Population'})
+sjoin_zip_districts_gdf['Population'] = sjoin_zip_districts_gdf['Population'].fillna(0).astype(int)
+
+print(sjoin_zip_districts_gdf[['Population', 'judicial_d']].head())
+
+```
+
+```{python}
+
+# Aggregate population data by district
+district_population = sjoin_zip_districts_gdf.groupby('judicial_d')['Population'].sum().reset_index()
+district_population.columns = ['District', 'Population']
+
+print(district_population.head())
+
+```
+
+### 3. Map the action ratio in each district
+
+At first, we calculate the action per capita in each district.
+
+```{python}
+# Merge the district_counts df which has the number of actions per district used in step3 and the population data per district
+district_data = district_counts.merge(district_population, left_on='District', right_on='District', how='left')
+
+# Check the Na values
+na_count = district_data['Population'].isna().sum()
+print(f"Number of NaN values in 'Population' column: {na_count}")
+
+# Replace Na (meaning no population data in that district) with 0
+district_data['Population'] = district_data['Population'].fillna(0).astype(int)
+
+# Calculate the enforcement actions on a per-capita 
+district_data['Actions_Per_Capita'] = district_data.apply(
+    lambda row: row['Count'] / row['Population'] if row['Population'] != 0 else float('nan'),
+    axis=1
+) # Replace 0 in Population with NaN to avoid division by zero
+
+```
+
+Then, create the GeoDataFrame for plotting.
+
+```{python}
+
+# Merge 
+action_percapita_gdf = districts_gdf.merge(district_data, left_on='judicial_d', right_on='District', how='left')
+
+# Replace Na with 0
+action_percapita_gdf['Actions_Per_Capita'] = action_percapita_gdf['Actions_Per_Capita'].fillna(0)
+```
+
+Finally, plot the choropleth map
+```{python}
+# Plot choropleth
+choropleth_per_capita = alt.Chart(action_percapita_gdf).mark_geoshape(
+    stroke='black',
+    strokeWidth=0.5
+).encode(
+    color=alt.Color('Actions_Per_Capita:Q', 
+                    scale=alt.Scale(scheme='spectral'),  
+                    legend=alt.Legend(title="Actions per Capita")),
+    tooltip=[alt.Tooltip('judicial_d:N', title='District'), 
+             alt.Tooltip('Actions_Per_Capita:Q', title='Actions per Capita')]
+).properties(
+    title='Per Capita Enforcement Actions by District',
+    width=800,
+    height=500
+).project('albersUsa')
+
+choropleth_per_capita.display()
+
+```
